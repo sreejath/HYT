@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Market Tracker — 35 Years</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.0.1/dist/chartjs-plugin-zoom.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/hammerjs@2.0.8/hammer.min.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #0f1117;
+      color: #e2e8f0;
+      min-height: 100vh;
+      padding: 24px;
+    }
+
+    header {
+      margin-bottom: 24px;
+    }
+    header h1 { font-size: 1.5rem; font-weight: 700; letter-spacing: -0.02em; }
+    header p  { font-size: 0.85rem; color: #94a3b8; margin-top: 4px; }
+
+    .controls {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-bottom: 20px;
+      align-items: center;
+    }
+    .controls label { font-size: 0.8rem; color: #94a3b8; margin-right: 4px; }
+    .range-btn {
+      background: #1e2330;
+      border: 1px solid #2d3748;
+      color: #94a3b8;
+      padding: 5px 14px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 0.8rem;
+      transition: all 0.15s;
+    }
+    .range-btn:hover, .range-btn.active {
+      background: #3b4fd8;
+      border-color: #3b4fd8;
+      color: #fff;
+    }
+
+    .chart-grid {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 20px;
+    }
+
+    .card {
+      background: #1a1f2e;
+      border: 1px solid #2d3748;
+      border-radius: 12px;
+      padding: 20px;
+    }
+    .card h2 {
+      font-size: 0.9rem;
+      font-weight: 600;
+      color: #cbd5e1;
+      margin-bottom: 4px;
+    }
+    .card .subtitle {
+      font-size: 0.75rem;
+      color: #64748b;
+      margin-bottom: 16px;
+    }
+    .chart-wrap { position: relative; height: 280px; }
+
+    .stats-row {
+      display: flex;
+      gap: 24px;
+      margin-bottom: 12px;
+      flex-wrap: wrap;
+    }
+    .stat { }
+    .stat .label { font-size: 0.7rem; color: #64748b; text-transform: uppercase; letter-spacing: 0.05em; }
+    .stat .value { font-size: 1rem; font-weight: 600; margin-top: 1px; }
+
+    .error-msg {
+      color: #f87171;
+      font-size: 0.82rem;
+      padding: 12px;
+      background: #2d1a1a;
+      border-radius: 8px;
+      border: 1px solid #7f1d1d;
+    }
+
+    #loading {
+      text-align: center;
+      padding: 80px;
+      color: #64748b;
+      font-size: 0.9rem;
+    }
+
+    .hint {
+      font-size: 0.72rem;
+      color: #475569;
+      margin-top: 8px;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Market Tracker</h1>
+    <p>S&amp;P 500 &middot; TSX Composite &middot; US High Yield Spread — 35-year view</p>
+  </header>
+
+  <div class="controls">
+    <label>Range:</label>
+    <button class="range-btn" data-years="5">5Y</button>
+    <button class="range-btn" data-years="10">10Y</button>
+    <button class="range-btn" data-years="20">20Y</button>
+    <button class="range-btn active" data-years="35">35Y</button>
+  </div>
+
+  <div id="loading">Loading market data…</div>
+
+  <div class="chart-grid" id="charts" style="display:none">
+
+    <div class="card">
+      <h2>S&amp;P 500</h2>
+      <div class="subtitle">Monthly close · USD</div>
+      <div class="stats-row" id="stats-sp500"></div>
+      <div class="chart-wrap"><canvas id="chart-sp500"></canvas></div>
+      <p class="hint">Scroll to zoom · drag to pan</p>
+    </div>
+
+    <div class="card">
+      <h2>TSX Composite</h2>
+      <div class="subtitle">Monthly close · CAD</div>
+      <div class="stats-row" id="stats-tsx"></div>
+      <div class="chart-wrap"><canvas id="chart-tsx"></canvas></div>
+      <p class="hint">Scroll to zoom · drag to pan</p>
+    </div>
+
+    <div class="card" id="hy-card">
+      <h2>US High Yield Option-Adjusted Spread</h2>
+      <div class="subtitle">ICE BofA HY Index · basis points above Treasuries</div>
+      <div class="stats-row" id="stats-hy"></div>
+      <div class="chart-wrap"><canvas id="chart-hy"></canvas></div>
+      <p class="hint">Scroll to zoom · drag to pan</p>
+    </div>
+
+  </div>
+
+  <script>
+    const PALETTE = {
+      sp500:  { line: '#60a5fa', fill: 'rgba(96,165,250,0.08)' },
+      tsx:    { line: '#34d399', fill: 'rgba(52,211,153,0.08)' },
+      hy:     { line: '#f87171', fill: 'rgba(248,113,113,0.08)' },
+    };
+
+    let allData = {};
+    let charts  = {};
+    let activeYears = 35;
+
+    function cutoff(years) {
+      const d = new Date();
+      d.setFullYear(d.getFullYear() - years);
+      return d.toISOString().slice(0, 10);
+    }
+
+    function filterByYears(series, years) {
+      const from = cutoff(years);
+      return series.filter(p => p.date >= from);
+    }
+
+    function makeChart(canvasId, series, color, yLabel, pct = false) {
+      const ctx = document.getElementById(canvasId).getContext('2d');
+      const labels = series.map(p => p.date);
+      const values = series.map(p => p.value);
+      const chart = new Chart(ctx, {
+        type: 'line',
+        data: {
+          labels,
+          datasets: [{
+            data: values,
+            borderColor: color.line,
+            backgroundColor: color.fill,
+            borderWidth: 1.5,
+            pointRadius: 0,
+            fill: true,
+            tension: 0.1,
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          animation: false,
+          interaction: { mode: 'index', intersect: false },
+          plugins: {
+            legend: { display: false },
+            tooltip: {
+              backgroundColor: '#1e2330',
+              borderColor: '#2d3748',
+              borderWidth: 1,
+              titleColor: '#94a3b8',
+              bodyColor: '#e2e8f0',
+              callbacks: {
+                label: ctx => {
+                  const v = ctx.parsed.y;
+                  return pct ? ` ${v.toFixed(2)}%` : ` ${v.toLocaleString()}`;
+                }
+              }
+            },
+            zoom: {
+              zoom: { wheel: { enabled: true }, pinch: { enabled: true }, mode: 'x' },
+              pan:  { enabled: true, mode: 'x' },
+            }
+          },
+          scales: {
+            x: {
+              ticks: {
+                color: '#475569',
+                maxTicksLimit: 10,
+                maxRotation: 0,
+                callback(val, i) {
+                  return this.getLabelForValue(val).slice(0, 4);
+                }
+              },
+              grid: { color: '#1e2330' }
+            },
+            y: {
+              ticks: {
+                color: '#475569',
+                callback: v => pct ? v + '%' : v.toLocaleString()
+              },
+              grid: { color: '#252b3b' }
+            }
+          }
+        }
+      });
+      return chart;
+    }
+
+    function calcStats(series) {
+      if (!series.length) return null;
+      const values = series.map(p => p.value);
+      const first = values[0], last = values[values.length - 1];
+      const gain = ((last - first) / first * 100).toFixed(1);
+      const max = Math.max(...values), min = Math.min(...values);
+      return { first, last, gain, max, min };
+    }
+
+    function renderStats(elId, stats, pct) {
+      const el = document.getElementById(elId);
+      if (!stats) { el.innerHTML = ''; return; }
+      const fmt = v => pct ? v.toFixed(2) + '%' : v.toLocaleString(undefined, {maximumFractionDigits: 0});
+      el.innerHTML = `
+        <div class="stat"><div class="label">Current</div><div class="value">${fmt(stats.last)}</div></div>
+        <div class="stat"><div class="label">Return</div><div class="value" style="color:${+stats.gain>=0?'#34d399':'#f87171'}">${stats.gain > 0 ? '+' : ''}${stats.gain}%</div></div>
+        <div class="stat"><div class="label">All-time high</div><div class="value">${fmt(stats.max)}</div></div>
+        <div class="stat"><div class="label">All-time low</div><div class="value">${fmt(stats.min)}</div></div>
+      `;
+    }
+
+    function updateCharts(years) {
+      const sp500  = filterByYears(allData.sp500,    years);
+      const tsx    = filterByYears(allData.tsx,      years);
+      const hy     = Array.isArray(allData.hy_spread) ? filterByYears(allData.hy_spread, years) : [];
+
+      if (charts.sp500) {
+        charts.sp500.data.labels   = sp500.map(p => p.date);
+        charts.sp500.data.datasets[0].data = sp500.map(p => p.value);
+        charts.sp500.resetZoom();
+        charts.sp500.update();
+      }
+      if (charts.tsx) {
+        charts.tsx.data.labels   = tsx.map(p => p.date);
+        charts.tsx.data.datasets[0].data = tsx.map(p => p.value);
+        charts.tsx.resetZoom();
+        charts.tsx.update();
+      }
+      if (charts.hy && hy.length) {
+        charts.hy.data.labels   = hy.map(p => p.date);
+        charts.hy.data.datasets[0].data = hy.map(p => p.value);
+        charts.hy.resetZoom();
+        charts.hy.update();
+      }
+
+      renderStats('stats-sp500', calcStats(sp500), false);
+      renderStats('stats-tsx',   calcStats(tsx),   false);
+      if (hy.length) renderStats('stats-hy', calcStats(hy), true);
+    }
+
+    async function init() {
+      const res  = await fetch('/api/data');
+      const data = await res.json();
+      allData = data;
+
+      document.getElementById('loading').style.display = 'none';
+      document.getElementById('charts').style.display  = 'grid';
+
+      const sp500 = filterByYears(data.sp500, activeYears);
+      const tsx   = filterByYears(data.tsx,   activeYears);
+
+      charts.sp500 = makeChart('chart-sp500', sp500, PALETTE.sp500, 'Price');
+      charts.tsx   = makeChart('chart-tsx',   tsx,   PALETTE.tsx,   'Price');
+
+      renderStats('stats-sp500', calcStats(sp500), false);
+      renderStats('stats-tsx',   calcStats(tsx),   false);
+
+      const hyCard = document.getElementById('hy-card');
+      if (data.hy_spread && data.hy_spread.error) {
+        hyCard.innerHTML += `<div class="error-msg">High Yield Spread unavailable: ${data.hy_spread.error}</div>`;
+      } else if (Array.isArray(data.hy_spread) && data.hy_spread.length) {
+        const hy = filterByYears(data.hy_spread, activeYears);
+        charts.hy = makeChart('chart-hy', hy, PALETTE.hy, 'Spread %', true);
+        renderStats('stats-hy', calcStats(hy), true);
+      }
+    }
+
+    document.querySelectorAll('.range-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('.range-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        activeYears = parseInt(btn.dataset.years);
+        updateCharts(activeYears);
+      });
+    });
+
+    init();
+  </script>
+</body>
+</html>
